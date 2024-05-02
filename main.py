@@ -160,7 +160,7 @@ class EmailImporterApp:
                         # Разбиваем строку, чтобы получить закодированное имя папки
                         split_string = ' "' + folder_info.decode().split('"')[1] + '" '
                         folder_name = folder_info.decode().split(split_string)[1].strip('"')
-                        folders.append(folder_name.replace('/', "\"))
+                        folders.append(folder_name)
             mail.logout()
         except Exception as e:
             print(f"Ошибка получения списка папок: {e}")
