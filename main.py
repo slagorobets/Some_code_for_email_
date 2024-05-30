@@ -1,3 +1,4 @@
+from tkinter import filedialog
 import imaplib
 import email
 import os
@@ -16,6 +17,9 @@ from threading import Semaphore
 from openpyxl import Workbook
 from bs4 import BeautifulSoup
 from pathlib import Path
+import quopri
+import babel.numbers
+
 
 class EmailImporterApp:
     total_emails_processed = 1  # Статическая переменная для сквозного счетчика
@@ -25,6 +29,9 @@ class EmailImporterApp:
         self.root = root
         self.lock = threading.Lock()  # Инициализация lock
         self.total_emails_processed = 0
+        self.mail = None
+        self.status = Status()
+
         # Диапазон дат или полная выборка писем
         def change_check_period(*args):
             if self.date_period.get():
@@ -46,7 +53,7 @@ class EmailImporterApp:
         self.save_attachments_var = tk.BooleanVar()
         self.save_attachments_var.set(True)  # По умолчанию сохранять вложения
         self.date_period = tk.BooleanVar()
-        self.date_period.set(True)  # По умолчанию выгружать все письма
+        self.date_period.set(False)  # По умолчанию выбор дат
         style = ttk.Style()
         style.theme_use("clam")
         self.label_email = ttk.Label(root, text="Адрес электронной почты:", font=("Helvetica", 12, "bold"))
@@ -73,21 +80,79 @@ class EmailImporterApp:
         self.start_date = DateEntry(root, year=datetime.today().year - 4, day=1, month=1)
         self.label_to = ttk.Label(root, text="по", font=("Helvetica", 8, "bold"))
         self.end_date = DateEntry(root)
+
+        self.label_from.pack(after=self.check_date_period)
+        self.start_date.pack(after=self.label_from)
+        self.label_to.pack(after=self.start_date)
+        self.end_date.pack(after=self.label_to)
+
         self.check_save_attachments = ttk.Checkbutton(root, text="Сохранять с вложениями",
                                                       variable=self.save_attachments_var)
         self.check_save_attachments.pack(pady=5)
-        self.text_output = scrolledtext.ScrolledText(root, wrap=tk.WORD, width=40, height=10, font=("Helvetica", 10))
-        self.text_output.pack(pady=10)
-        self.button_import = ttk.Button(root, text="Импортировать", command=self.start_import, style="Accent.TButton")
+
+        self.attachment_dir_label = ttk.Label(root, text="Каталог для сохранения:", font=("Helvetica", 12, "bold"))
+        self.attachment_dir_label.pack(pady=5)
+        self.attachment_dir_label.pack_forget()  # По умолчанию скрываем поле ввода
+
+        self.attachment_dir_entry = ttk.Entry(root, width=40, font=("Helvetica", 10))
+        self.attachment_dir_entry.pack(pady=5)
+        self.attachment_dir_entry.pack_forget()  # По умолчанию скрываем поле ввода
+
+        self.choose_dir_button = ttk.Button(root, text="Выбрать папку", command=self.choose_attachment_dir)
+        self.choose_dir_button.pack(pady=5)
+
+        self.default_folder_label_ = ttk.Label(root,
+                                               text="Вложения будут сохранены по умолчанию:\nрядом с программой (ИЛИ) выберите папку",
+                                               font=("Helvetica", 10))
+        self.default_folder_label_.pack(pady=5)
+
+        self.button_connect = ttk.Button(root, text="Подключиться к почтовому серверу",
+                                         command=self.connect_to_email_server)
+        self.button_connect.pack(pady=10)
+
+        self.button_import = ttk.Button(root, text="Импорт", command=self.start_import, style="Accent.TButton")
         self.button_import.pack(pady=10)
         self.style = ttk.Style()
         self.style.configure("Accent.TButton", foreground="white", background="#5E9FFF", font=("Helvetica", 12, "bold"))
-        # Создаем директорию для вложений
-        self.attachment_dir = os.path.join(os.getcwd(), "email_attachments")
-        if not os.path.exists(self.attachment_dir):
-            os.makedirs(self.attachment_dir)
+
+        self.attachment_dir = ""  # Пустая строка для хранения пути к каталогу для сохранения вложений
+
+    def connect_to_email_server(self):
+        email_address = self.entry_email.get()
+        password = self.entry_password.get()
+        imap_server = self.combo_imap.get()
+
+        try:
+            # Создаем соединение с сервером
+            mail = imaplib.IMAP4_SSL(imap_server)
+            mail.login(email_address, password)
+            messagebox.showinfo("Успех", "Подключение успешно установлено!")
+            # Здесь вы можете добавить дальнейшую обработку, например, выбор почтовых ящиков и т.д.
+        except imaplib.IMAP4.error as e:
+            messagebox.showerror("Ошибка подключения", f"Не удалось подключиться к серверу IMAP:\n{str(e)}")
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Произошла ошибка:\n{str(e)}")
+
+    def choose_attachment_dir(self):
+        chosen_dir = filedialog.askdirectory()
+        if chosen_dir:
+            # Если папка была выбрана, очистите поле ввода и вставьте выбранный путь
+            self.attachment_dir_entry.delete(0, tk.END)
+            self.attachment_dir_entry.insert(0, chosen_dir)
+            # Создаем папку email_attachments в выбранной директории, если ее еще нет
+            self.attachment_dir = os.path.join(chosen_dir, "email_attachments")
+            if not os.path.exists(self.attachment_dir):
+                os.makedirs(self.attachment_dir)
+            # Показать поле ввода после выбора папки
+            self.attachment_dir_label.pack(pady=5)
+            self.attachment_dir_entry.pack(pady=5)
 
     def start_import(self):
+        # Если папка не была выбрана, создаем папку email_attachments рядом с приложением
+        if not self.attachment_dir:
+            self.attachment_dir = os.path.join(os.getcwd(), "email_attachments")
+            if not os.path.exists(self.attachment_dir):
+                os.makedirs(self.attachment_dir)
         # Сбросить счетчик перед началом новой сессии импорта
         self.total_emails_processed = 1
         # Получение значений из полей ввода
@@ -114,16 +179,16 @@ class EmailImporterApp:
             os.makedirs(session_folder_path)
         # Создаем уникальное имя лог-файла с временной меткой
         log_filename = f"email_log_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.csv"
-        log_filepath = os.path.join(os.getcwd(), log_filename)
+        log_filepath = os.path.join(os.path.dirname(self.attachment_dir), log_filename)
         # Создаем уникальный excel файл с временной меткой
         excel_filename = f"email_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.xlsx"
-        excel_filepath = os.path.join(os.getcwd(), excel_filename)
+        excel_filepath = os.path.join(os.path.dirname(self.attachment_dir), excel_filename)
         # Получаем общее количество писем в папке
         total_emails_in_folder = sum(
             len(self.get_email_uids(email_address, password, imap_server, folder, check_all, start_date, end_date)) for
             folder in self.get_folders(email_address, password, imap_server))
         # Создаем окно прогресса и запускаем импорт в отдельном потоке
-        progress_window = ProgressWindow(self.root, total_emails_in_folder)
+        progress_window = ProgressWindow(self.root, total_emails_in_folder, self.status)
         progress_thread = threading.Thread(target=self.import_emails_async, args=(
             email_address, password, imap_server, check_all, start_date, end_date, save_attachments,
             session_folder_path,
@@ -153,12 +218,16 @@ class EmailImporterApp:
                 self.saving_semaphore.acquire()
 
                 for folder in folders:
+                    if self.status.stop_threads:
+                        break
                     folder_path = os.path.join(session_folder_path, self.decode_folder_name(folder))
                     if not os.path.exists(folder_path):
                         os.makedirs(folder_path)
                     uids = self.get_email_uids(email_address, password, imap_server, folder, check_all, start_date,
                                                end_date)
                     for uid in uids:
+                        if self.status.stop_threads:
+                            break
                         thread = executor.submit(self.import_emails, email_address, password, imap_server, folder,
                                                  save_attachments, folder_path, log_filepath, sheet, uid,
                                                  progress_window, total_emails)
@@ -166,56 +235,79 @@ class EmailImporterApp:
 
                         # Небольшая задержка для имитации работы
                         time.sleep(0.1)
-
+                # Дождемся завершения всех потоков
+                for thread in thread_list:
+                    if not self.status.stop_threads:
+                        thread.result()
+                    else:
+                        executor.shutdown(wait=False, cancel_futures=False)
+                        break
             except Exception as e:
                 print(f"Ошибкапри импорте писем: {e}")
                 # В случае ошибки освобождаем семафор
                 self.saving_semaphore.release()
                 return
             finally:
+                # Сохраняем excel файл
+                wb.save(excel_filepath)
+                # Закрываем окно прогресса после завершения
+                if not self.status.stop_threads:
+                    progress_window.close()
+                # Выводим сообщение о завершении импорта
+                self.after_completion_message()
+
                 # Освобождаем семафор после завершения всех потоков
                 self.saving_semaphore.release()
-        # Дождемся завершения всех потоков
-        for thread in thread_list:
-            thread.result()
-        # Сохраняем excel файл
-        wb.save(excel_filepath)
-        # Закрываем окно прогресса после завершения
-        progress_window.close()
-        # Выводим сообщение о завершении импорта
-        self.after_completion_message()
 
     def import_emails(self, email_address, password, imap_server, folder, save_attachments, folder_path, log_filepath,
                       sheet, uid, progress_window, total_emails):
-        try:
-            mail = imaplib.IMAP4_SSL(imap_server)
-            mail.login(email_address, password)
-            mail.select(mail._quote(folder))
+        max_attempts = 3
+        mail = None  # Инициализируем переменную mail
+        for attempt in range(max_attempts):
+            try:
+                mail = imaplib.IMAP4_SSL(imap_server)
+                mail.login(email_address, password)
+                mail.select(mail._quote(folder))
 
-            result, msg_data = mail.uid('fetch', uid, '(RFC822)')
-            if result == 'OK':
-                raw_email = msg_data[0][1]
-                msg = email.message_from_bytes(raw_email)
-                # Получаем информацию о письме
-                from_, to, subject, email_date, email_time, num_attachments, msg_size = self.get_email_info(msg,
-                                                                                                            save_attachments,
-                                                                                                            folder_path,
-                                                                                                            uid)
-                # Получаем путь к файлу .eml
-                msg_filepath = os.path.join(folder_path, f"{uid.decode()}_{email_date}_{email_time}.eml")
-                # Записываем информацию в лог
-                self.write_to_log(log_filepath, uid, email_date, email_time, from_, to, subject, num_attachments,
-                                  msg_size, msg_filepath, folder)
-                body = self.get_email_content(msg)
-                self.write_to_excel(log_filepath, sheet, uid, email_date, email_time, from_, to, subject,
-                                    num_attachments, msg_size, msg_filepath, body, folder)
-                self.total_emails_processed += 1
-                # Обновляем прогресс в окне
-                progress_window.update_progress(self.total_emails_processed, total_emails)
-        except Exception as e:
-            print(f"Ошибка обработки письма {uid}: {e}")
-        finally:
-            mail.logout()
+                result, msg_data = mail.uid('fetch', uid, '(RFC822)')
+                if result == 'OK':
+                    raw_email = msg_data[0][1]
+                    msg = email.message_from_bytes(raw_email)
+                    # Получаем информацию о письме
+                    from_, to, subject, email_date, email_time, num_attachments, msg_size = self.get_email_info(msg,
+                                                                                                                save_attachments,
+                                                                                                                folder_path,
+                                                                                                                uid)
+                    # Получаем путь к файлу .eml
+                    msg_filepath = os.path.join(folder_path, f"{uid.decode()}_{email_date}_{email_time}.eml")
+                    # Записываем информацию в лог
+                    self.write_to_log(log_filepath, uid, email_date, email_time, from_, to, subject, num_attachments,
+                                      msg_size, msg_filepath, folder)
+                    body = self.get_letter_text(msg)
+                    self.write_to_excel(log_filepath, sheet, uid, email_date, email_time, from_, to, subject,
+                                        num_attachments, msg_size, msg_filepath, body, folder)
+                    self.total_emails_processed += 1
+                    # Обновляем прогресс в окне
+                    progress_window.update_progress(self.total_emails_processed, total_emails)
+                    break  # выходим при успехе
+            except imaplib.IMAP4.abort as e:
+                if 'Connection reset by peer' in str(e) and attempt < (max_attempts - 1):
+                    print(
+                        f"Соединение сброшено сервером, попытка {attempt + 1} из {max_attempts}. Повторное подключение...")
+                    time.sleep(5)  # Ожидание перед следующей попыткой подключения
+                    continue
+                else:
+                    print(f"Ошибка обработки письма {uid}: {e}")
+                    break
+            except Exception as e:
+                print(f"Ошибка обработки письма {uid}: {e}")
+                break
+            finally:
+                if mail:
+                    try:
+                        mail.logout()
+                    except:
+                        pass
 
     def get_folders(self, email_address, password, imap_server):
         folders = []
@@ -259,57 +351,61 @@ class EmailImporterApp:
             mail.logout()
         return uids
 
-    def remove_html_css(self, text):
-        # Используем BeautifulSoup для удаления HTML-тегов и CSS-стилей
-        soup = BeautifulSoup(text, 'html.parser')
-        # Удаляем все теги стилей
-        for style in soup.find_all('style'):
-            style.decompose()
-        # Возвращаем текст без HTML-тегов и CSS-стилей
-        return re.sub(r'\n\s*\n', '\n', soup.get_text().strip())
+    def clear_space(self, body):
+        s = ' '.join(body.split())
+        return s
 
-    def strip_html_tags(self, text):
-        # Удаление HTML-тегов
-        clean_text = self.remove_html_css(text)
-        # Удаление непечатаемых символов
-        clean_text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]', '', clean_text)
-        # Удаление множественных пробелов и переносов строк
-        clean_text = re.sub(r'\s+', ' ', clean_text)
-        # Удаление лишних пробелов в начале и конце текста
-        clean_text = clean_text.strip()
-        return clean_text
-
-    def get_email_content(self, msg):
-        body = ""
+    def get_letter_text_from_html(self, body):
+        body = body.replace("<div><div>", "<div>").replace("</div></div>", "</div>")
         try:
-            if msg.is_multipart():
-                for part in msg.walk():
-                    if part.get_content_type() == "text/plain":
-                        payload = part.get_payload(decode=True)
-                        if isinstance(payload, bytes):
-                            body = payload.decode(errors='replace')
-                            break
-                    elif part.get_content_type() == "text/html":
-                        payload = part.get_payload(decode=True)
-                        if isinstance(payload, bytes):
-                            html_body = payload.decode(errors='replace')
-                            # Преобразование HTML в текст и удаление CSS
-                            body = self.remove_html_css(html_body)
-                            break
-            else:
-                if 'application/' not in msg.get_content_type():
-                    payload = msg.get_payload(decode=True)
-                    if isinstance(payload, bytes):
-                        body = payload.decode(errors='replace')
-        except Exception as e:
-            print(f"Ошибка обработки содержимого: {e}")
-        # Удаление оставшихся HTML-тегов после конвертации HTML в текст
-        body = self.strip_html_tags(body)
-        return body
+            soup = BeautifulSoup(body, "html.parser")
+            paragraphs = soup.find_all("div")
+            text = ""
+            for paragraph in paragraphs:
+                text += paragraph.text + "\n"
+            return text.replace("\xa0", " ")
+        except (Exception) as exp:
+            print("text ftom html err ", exp)
+            return False
+
+    def letter_type(self, part):
+        if part["Content-Transfer-Encoding"] in (None, "7bit", "8bit", "binary"):
+            return part.get_payload()
+        elif part["Content-Transfer-Encoding"] == "base64":
+            encoding = part.get_content_charset()
+            return base64.b64decode(part.get_payload()).decode(encoding)
+        elif part["Content-Transfer-Encoding"] == "quoted-printable":
+            encoding = part.get_content_charset()
+            return quopri.decodestring(part.get_payload()).decode(encoding)
+        else:  # all possible types: quoted-printable, base64, 7bit, 8bit, and binary
+            return part.get_payload()
+
+    def get_letter_text(self, msg):
+        if msg.is_multipart():
+            for part in msg.walk():
+                count = 0
+                if part.get_content_maintype() == "text" and count == 0:
+                    extract_part = self.letter_type(part)
+                    if part.get_content_subtype() == "html":
+                        letter_text = self.get_letter_text_from_html(extract_part)
+                    else:
+                        letter_text = extract_part.rstrip().lstrip()
+                    count += 1
+                    return self.clear_space(letter_text.replace("<", "").replace(">", "").replace("\xa0", " "))
+        else:
+            count = 0
+            if msg.get_content_maintype() == "text" and count == 0:
+                extract_part = self.letter_type(msg)
+                if msg.get_content_subtype() == "html":
+                    letter_text = self.get_letter_text_from_html(extract_part)
+                else:
+                    letter_text = extract_part
+                count += 1
+                return self.clear_space(letter_text.replace("<", "").replace(">", "").replace("\xa0", " "))
 
     def save_email_to_eml(self, msg, folder_path, email_number, email_date, email_time):
         encodings = ['utf-8', 'koi8-r', 'latin1', 'utf-16', 'iso-8859-1', 'windows-1251', 'utf-8-sig', 'replace',
-                     'ignore', 'backslashreplace', 'xmlcharrefreplace', 'unicode_escape']
+                     'ignore', 'backslashreplace']
         for encoding in encodings:
             try:
                 # Создаем пустой EML-файл
@@ -322,6 +418,7 @@ class EmailImporterApp:
                 return os.path.getsize(eml_filepath)
             except Exception as e:
                 print(f"Ошибка при сохранении сообщения {int(email_number)} с кодировкой {encoding}: {e}")
+
         # Если все попытки сохранения с указанием кодировки завершились неудачно, попробуем сохранить без указания кодировки
         try:
             # Создаем пустой EML-файл без указания кодировки
@@ -334,12 +431,27 @@ class EmailImporterApp:
             return os.path.getsize(eml_filepath)
         except Exception as e:
             print(f"Ошибка при сохранении сообщения {int(email_number)} без указания кодировки: {e}")
+
+        # Если все попытки сохранения с указанием и без указания кодировки завершились неудачно, сохраняем в байтовом виде
+        try:
+            # Создаем пустой EML-файл в байтовом режиме
+            eml_filepath = os.path.join(folder_path, f"{int(email_number)}_{email_date}_{email_time}.eml")
+            with open(eml_filepath, "wb") as f:
+                # Преобразуем объект сообщения в байты и записываем в EML-файл
+                f.write(msg.as_bytes())
+            print(f"Сообщение {int(email_number)} сохранено в формате .eml в байтовом виде")
+            # Возвращаем размер сохраненного сообщения
+            return os.path.getsize(eml_filepath)
+        except Exception as e:
+            print(f"Ошибка при сохранении сообщения {int(email_number)} в байтовом виде: {e}")
+
         return 0
 
     def save_email_to_eml_without_attachments(self, msg, folder_path, email_number, email_date, email_time):
         pass
 
-    def write_to_log(self, log_filepath, email_number, email_date, email_time, from_, to, subject, num_attachments, msg_size, msg_filepath, folder_name):
+    def write_to_log(self, log_filepath, email_number, email_date, email_time, from_, to, subject, num_attachments,
+                     msg_size, msg_filepath, folder_name):
         try:
             with self.lock:
                 formatted_date = datetime.strptime(email_date, "%d-%m-%Y").strftime("%d.%m.%Y")
@@ -397,6 +509,7 @@ class EmailImporterApp:
         else:
             msg_size = self.save_email_to_eml_without_attachments(msg, folder_path, uid, email_date, email_time)
         return from_, to, subject, email_date, email_time, num_attachments, msg_size
+
     def clean_subject(self, subject):
         """Очистка темы письма от инородных символов."""
         decoded_subject, encoding = decode_header(subject)[0]
@@ -470,22 +583,41 @@ class EmailImporterApp:
         messagebox.showinfo("Импорт завершен",
                             f"Импорт писем успешно завершен. Скачано писем: {self.total_emails_processed - 1}")
 
+
+class Status:
+    def __init__(self):
+        self.stop_threads = False
+
+
 class Redirector:
     def __init__(self, text_widget):
         self.text_widget = text_widget
 
     def write(self, string):
-        self.text_widget.insert(tk.END, string)
-        self.text_widget.see(tk.END)  # Прокрутка до конца
+        if not string.endswith('\n'):  # Добавил обязательный перенос строки
+            string += '\n'
+        try:
+            self.text_widget.insert(tk.END, string)
+            self.text_widget.see(tk.END)  # Прокрутка до конца
+        except Exception as e:
+            print(f"Ошибка записи в консоль: {e}")
 
     def flush(self):
         pass  # Этот метод необходим для совместимости с консолью
 
 
 class ProgressWindow:
-    def __init__(self, root, total):
+    def __init__(self, root, total, status):
         self.root = root
+
+        def on_close():
+            status.stop_threads = True
+            self.close()
+
         self.progress_window = tk.Toplevel(root)
+
+        self.progress_window.protocol('WM_DELETE_WINDOW', on_close)
+
         self.progress_window.title("Прогресс выполнения")
 
         self.progress_label = ttk.Label(self.progress_window, text="Выполняется импорт...")
@@ -519,6 +651,8 @@ class ProgressWindow:
 
     def close(self):
         self.progress_window.destroy()
+
+
 def main():
     root = tk.Tk()
     EmailImporterApp(root)
